@@ -1,0 +1,63 @@
+name: Terraform CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Senha temporária do banco do runner
+        run: |
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          echo "TF_VAR_postgres_password=$password" >> "$GITHUB_ENV"
+      - name: Terraform init
+        run: terraform init -input=false
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+      - name: Terraform validate
+        run: terraform validate
+      - name: Terraform plan
+        run: terraform plan -input=false
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve -input=false
+      - name: Smoke test do site
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          docker ps
+          url=$(terraform output -raw web_url)
+          for attempt in $(seq 1 30); do
+            if curl -fsS "$url" | grep -q 'Atualizado via pipeline'; then
+              echo 'Site respondeu com o conteúdo esperado.'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'O site não respondeu com o conteúdo esperado.' >&2
+          exit 1
+      - name: Demonstrar banco efêmero do runner
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          for attempt in $(seq 1 30); do
+            docker exec meu-container-db pg_isready -U postgres && break
+            sleep 2
+          done
+          docker exec meu-container-db psql -v ON_ERROR_STOP=1 -U postgres -c 'CREATE TABLE IF NOT EXISTS execucoes (run_id BIGINT PRIMARY KEY);'
+          previous=$(docker exec meu-container-db psql -At -U postgres -c 'SELECT count(*) FROM execucoes;')
+          echo "Linhas de execuções anteriores neste runner: $previous"
+          test "$previous" = 0
+          docker exec meu-container-db psql -v ON_ERROR_STOP=1 -U postgres -c "INSERT INTO execucoes VALUES ($GITHUB_RUN_ID); SELECT * FROM execucoes;"

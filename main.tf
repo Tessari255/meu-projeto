@@ -62,3 +62,5 @@ resource "docker_container" "db" {
     container_path = "/var/lib/postgresql/data"
   }
 }
+
+# Lab 2: pipeline validada antes de aplicar.
